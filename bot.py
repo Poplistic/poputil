@@ -4,7 +4,6 @@ from discord import app_commands
 import os
 import traceback
 from dotenv import load_dotenv
-import database
 
 load_dotenv()
 TOKEN = os.getenv("DISCORD_TOKEN")
@@ -36,47 +35,29 @@ async def on_ready():
     print(f"PopUtil online as {bot.user}")
 
 # -----------------------
-# GLOBAL AUTO-DEFER
-# -----------------------
-
-@bot.listen("on_interaction")
-async def auto_defer(interaction: discord.Interaction):
-    if interaction.type == discord.InteractionType.application_command:
-        try:
-            if not interaction.response.is_done():
-                await interaction.response.defer()
-        except:
-            pass
-
-# -----------------------
 # GLOBAL ERROR HANDLER
 # -----------------------
 
 @bot.tree.error
 async def on_app_command_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
-    try:
-        if not interaction.response.is_done():
-            await interaction.response.defer(ephemeral=True)
-    except:
-        pass
-
     if isinstance(error, app_commands.MissingPermissions):
-        return await interaction.followup.send(
+        return await interaction.response.send_message(
             "❌ You don't have permission to use this command.",
             ephemeral=True
         )
 
     if isinstance(error, app_commands.CommandOnCooldown):
-        return await interaction.followup.send(
+        return await interaction.response.send_message(
             f"⏳ Try again in `{error.retry_after:.1f}` seconds.",
             ephemeral=True
         )
 
     traceback.print_exception(type(error), error, error.__traceback__)
 
-    await interaction.followup.send(
-        "⚠️ An unexpected error occurred.",
-        ephemeral=True
-    )
+    if not interaction.response.is_done():
+        await interaction.response.send_message(
+            "⚠️ An unexpected error occurred.",
+            ephemeral=True
+        )
 
 bot.run(TOKEN)
