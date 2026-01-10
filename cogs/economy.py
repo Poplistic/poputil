@@ -12,11 +12,12 @@ import random
 DAILY_AMOUNT = 250
 WORK_COOLDOWN = 3600
 CRIME_COOLDOWN = 7200
+ROB_COOLDOWN = 3600
 
 SHOP_ITEMS = {
     "cookie": {"price": 100, "description": "A tasty cookie 🍪"},
     "laptop": {"price": 2500, "description": "Used for work 💻"},
-    "gun": {"price": 5000, "description": "Increases crime success 🔫"}
+    "gun": {"price": 5000, "description": "Increases crime & rob success 🔫"}
 }
 
 # -----------------------
@@ -33,7 +34,10 @@ class Economy(commands.Cog):
 
     def get_user(self, user_id, guild_id):
         database.cursor.execute(
-            "SELECT balance, last_daily, last_work, last_crime FROM economy WHERE user_id=? AND guild_id=?",
+            """
+            SELECT balance, last_daily, last_work, last_crime
+            FROM economy WHERE user_id=? AND guild_id=?
+            """,
             (user_id, guild_id)
         )
         row = database.cursor.fetchone()
@@ -48,11 +52,10 @@ class Economy(commands.Cog):
 
         return row
 
-    def add_balance(self, user_id, guild_id, amount):
-        bal, d, w, c = self.get_user(user_id, guild_id)
+    def update_balance(self, user_id, guild_id, balance):
         database.cursor.execute(
             "UPDATE economy SET balance=? WHERE user_id=? AND guild_id=?",
-            (bal + amount, user_id, guild_id)
+            (balance, user_id, guild_id)
         )
         database.db.commit()
 
@@ -63,20 +66,6 @@ class Economy(commands.Cog):
         )
         row = database.cursor.fetchone()
         return row[0] if row else 0
-
-    def add_item(self, user_id, guild_id, item, amount):
-        current = self.get_item(user_id, guild_id, item)
-        if current == 0:
-            database.cursor.execute(
-                "INSERT INTO inventory VALUES (?, ?, ?, ?)",
-                (user_id, guild_id, item, amount)
-            )
-        else:
-            database.cursor.execute(
-                "UPDATE inventory SET amount=? WHERE user_id=? AND guild_id=? AND item=?",
-                (current + amount, user_id, guild_id, item)
-            )
-        database.db.commit()
 
     # -----------------------
     # BALANCE
@@ -93,6 +82,9 @@ class Economy(commands.Cog):
 
     @app_commands.command(name="pay", description="Pay another user")
     async def pay(self, interaction: discord.Interaction, user: discord.Member, amount: int):
+        if user.bot or user == interaction.user:
+            return await interaction.followup.send("❌ Invalid target.", ephemeral=True)
+
         if amount <= 0:
             return await interaction.followup.send("❌ Invalid amount.", ephemeral=True)
 
@@ -100,8 +92,10 @@ class Economy(commands.Cog):
         if bal < amount:
             return await interaction.followup.send("❌ Not enough coins.", ephemeral=True)
 
-        self.add_balance(interaction.user.id, interaction.guild.id, -amount)
-        self.add_balance(user.id, interaction.guild.id, amount)
+        target_bal, *_ = self.get_user(user.id, interaction.guild.id)
+
+        self.update_balance(interaction.user.id, interaction.guild.id, bal - amount)
+        self.update_balance(user.id, interaction.guild.id, target_bal + amount)
 
         await interaction.followup.send(
             f"💸 {interaction.user.mention} paid {user.mention} **{amount}** coins"
@@ -123,23 +117,26 @@ class Economy(commands.Cog):
                 ephemeral=True
             )
 
-        bonus = 100
+        earnings = 100
         if self.get_item(interaction.user.id, interaction.guild.id, "laptop"):
-            bonus += 150
+            earnings += 150
 
         database.cursor.execute(
-            "UPDATE economy SET balance=?, last_work=? WHERE user_id=? AND guild_id=?",
-            (bal + bonus, now, interaction.user.id, interaction.guild.id)
+            """
+            UPDATE economy SET balance=?, last_work=?
+            WHERE user_id=? AND guild_id=?
+            """,
+            (bal + earnings, now, interaction.user.id, interaction.guild.id)
         )
         database.db.commit()
 
-        await interaction.followup.send(f"💼 You worked and earned **{bonus}** coins!")
+        await interaction.followup.send(f"💼 You worked and earned **{earnings}** coins!")
 
     # -----------------------
     # CRIME
     # -----------------------
 
-    @app_commands.command(name="crime", description="Commit a crime (risk!)")
+    @app_commands.command(name="crime", description="Commit a crime (high risk)")
     async def crime(self, interaction: discord.Interaction):
         bal, _, _, last_crime = self.get_user(interaction.user.id, interaction.guild.id)
         now = int(time.time())
@@ -160,15 +157,63 @@ class Economy(commands.Cog):
             bal += reward
             message = f"🕵️ Crime successful! You gained **{reward}** coins."
         else:
-            fine = random.randint(100, 300)
-            bal = max(0, bal - fine)
-            message = f"🚓 You got caught! You lost **{fine}** coins."
+            loss = random.randint(100, 300)
+            bal = max(0, bal - loss)
+            message = f"🚓 You got caught! You lost **{loss}** coins."
 
         database.cursor.execute(
-            "UPDATE economy SET balance=?, last_crime=? WHERE user_id=? AND guild_id=?",
+            """
+            UPDATE economy SET balance=?, last_crime=?
+            WHERE user_id=? AND guild_id=?
+            """,
             (bal, now, interaction.user.id, interaction.guild.id)
         )
         database.db.commit()
+
+        await interaction.followup.send(message)
+
+    # -----------------------
+    # ROB (USER VS USER)
+    # -----------------------
+
+    @app_commands.command(name="rob", description="Rob another user (very risky)")
+    async def rob(self, interaction: discord.Interaction, target: discord.Member):
+        if target.bot or target == interaction.user:
+            return await interaction.followup.send("❌ Invalid target.", ephemeral=True)
+
+        robber_bal, *_ = self.get_user(interaction.user.id, interaction.guild.id)
+        target_bal, *_ = self.get_user(target.id, interaction.guild.id)
+
+        if target_bal < 100:
+            return await interaction.followup.send(
+                "❌ Target doesn't have enough coins to rob.",
+                ephemeral=True
+            )
+
+        success_chance = 0.35
+        if self.get_item(interaction.user.id, interaction.guild.id, "gun"):
+            success_chance += 0.2
+
+        if random.random() < success_chance:
+            stolen = random.randint(100, min(500, target_bal))
+            robber_bal += stolen
+            target_bal -= stolen
+
+            message = (
+                f"🦹 **Robbery successful!**\n"
+                f"You stole **{stolen}** coins from {target.mention}"
+            )
+        else:
+            penalty = random.randint(100, min(300, robber_bal))
+            robber_bal -= penalty
+
+            message = (
+                f"🚨 **Robbery failed!**\n"
+                f"You were caught and lost **{penalty}** coins."
+            )
+
+        self.update_balance(interaction.user.id, interaction.guild.id, robber_bal)
+        self.update_balance(target.id, interaction.guild.id, target_bal)
 
         await interaction.followup.send(message)
 
@@ -205,8 +250,20 @@ class Economy(commands.Cog):
         if bal < price:
             return await interaction.followup.send("❌ Not enough coins.", ephemeral=True)
 
-        self.add_balance(interaction.user.id, interaction.guild.id, -price)
-        self.add_item(interaction.user.id, interaction.guild.id, item, 1)
+        database.cursor.execute(
+            "UPDATE economy SET balance=? WHERE user_id=? AND guild_id=?",
+            (bal - price, interaction.user.id, interaction.guild.id)
+        )
+        database.cursor.execute(
+            """
+            INSERT INTO inventory (user_id, guild_id, item, amount)
+            VALUES (?, ?, ?, 1)
+            ON CONFLICT(user_id, guild_id, item)
+            DO UPDATE SET amount = amount + 1
+            """,
+            (interaction.user.id, interaction.guild.id, item)
+        )
+        database.db.commit()
 
         await interaction.followup.send(
             f"✅ You bought **{item}** for **{price}** coins"
