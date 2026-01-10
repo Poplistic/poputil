@@ -8,36 +8,35 @@ class Utility(commands.Cog):
         self.bot = bot
 
     @app_commands.command(name="ping", description="Check bot latency")
+    @app_commands.checks.cooldown(1, 5)
     async def ping(self, interaction: discord.Interaction):
         latency = round(self.bot.latency * 1000)
-        await interaction.response.send_message(f"🏓 Pong! `{latency}ms`")
-
-    @app_commands.command(name="serverinfo", description="Get info about this server")
-    async def serverinfo(self, interaction: discord.Interaction):
-        guild = interaction.guild
-        embed = discord.Embed(
-            title=guild.name,
-            color=discord.Color.blurple(),
-            timestamp=datetime.utcnow()
-        )
-        embed.add_field(name="Members", value=guild.member_count)
-        embed.add_field(name="Owner", value=guild.owner)
-        embed.add_field(name="Created", value=guild.created_at.strftime("%Y-%m-%d"))
-        embed.set_thumbnail(url=guild.icon.url if guild.icon else None)
-        await interaction.response.send_message(embed=embed)
+        await interaction.followup.send(f"🏓 Pong! `{latency}ms`")
 
     @app_commands.command(name="userinfo", description="Get info about a user")
     @app_commands.describe(user="The user to look up")
     async def userinfo(self, interaction: discord.Interaction, user: discord.Member):
         embed = discord.Embed(
             title=str(user),
-            color=user.color,
+            color=user.color if user.color.value else discord.Color.blurple(),
             timestamp=datetime.utcnow()
         )
-        embed.add_field(name="Joined Server", value=user.joined_at.strftime("%Y-%m-%d"))
-        embed.add_field(name="Account Created", value=user.created_at.strftime("%Y-%m-%d"))
-        embed.set_thumbnail(url=user.avatar.url if user.avatar else None)
-        await interaction.response.send_message(embed=embed)
+
+        embed.add_field(
+            name="Joined Server",
+            value=user.joined_at.strftime("%Y-%m-%d") if user.joined_at else "Unknown",
+            inline=False
+        )
+
+        embed.add_field(
+            name="Account Created",
+            value=user.created_at.strftime("%Y-%m-%d"),
+            inline=False
+        )
+
+        embed.set_thumbnail(url=user.display_avatar.url)
+
+        await interaction.followup.send(embed=embed)
 
 async def setup(bot):
     await bot.add_cog(Utility(bot))
