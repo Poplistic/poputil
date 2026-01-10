@@ -9,15 +9,16 @@ import random
 # CONSTANTS
 # -----------------------
 
-DAILY_AMOUNT = 250
+ECONOMY_CHANNEL_NAME = "economy"
+
 WORK_COOLDOWN = 3600
 CRIME_COOLDOWN = 7200
 ROB_COOLDOWN = 3600
 
 SHOP_ITEMS = {
     "cookie": {"price": 100, "description": "A tasty cookie 🍪"},
-    "laptop": {"price": 2500, "description": "Used for work 💻"},
-    "gun": {"price": 5000, "description": "Increases crime & rob success 🔫"}
+    "laptop": {"price": 2500, "description": "Boosts work income 💻"},
+    "gun": {"price": 5000, "description": "Boosts crime & rob success 🔫"}
 }
 
 # -----------------------
@@ -29,13 +30,26 @@ class Economy(commands.Cog):
         self.bot = bot
 
     # -----------------------
-    # INTERNAL HELPERS
+    # CHANNEL CHECK
+    # -----------------------
+
+    async def economy_channel_only(self, interaction: discord.Interaction) -> bool:
+        if interaction.channel.name != ECONOMY_CHANNEL_NAME:
+            await interaction.followup.send(
+                f"❌ Economy commands can only be used in **#{ECONOMY_CHANNEL_NAME}**.",
+                ephemeral=True
+            )
+            return False
+        return True
+
+    # -----------------------
+    # DATABASE HELPERS
     # -----------------------
 
     def get_user(self, user_id, guild_id):
         database.cursor.execute(
             """
-            SELECT balance, last_daily, last_work, last_crime
+            SELECT balance, last_work, last_crime
             FROM economy WHERE user_id=? AND guild_id=?
             """,
             (user_id, guild_id)
@@ -48,11 +62,11 @@ class Economy(commands.Cog):
                 (user_id, guild_id)
             )
             database.db.commit()
-            return 0, 0, 0, 0
+            return 0, 0, 0
 
         return row
 
-    def update_balance(self, user_id, guild_id, balance):
+    def set_balance(self, user_id, guild_id, balance):
         database.cursor.execute(
             "UPDATE economy SET balance=? WHERE user_id=? AND guild_id=?",
             (balance, user_id, guild_id)
@@ -73,7 +87,12 @@ class Economy(commands.Cog):
 
     @app_commands.command(name="balance", description="Check your balance")
     async def balance(self, interaction: discord.Interaction):
-        bal, *_ = self.get_user(interaction.user.id, interaction.guild.id)
+        await interaction.response.defer()
+
+        if not await self.economy_channel_only(interaction):
+            return
+
+        bal, _, _ = self.get_user(interaction.user.id, interaction.guild.id)
         await interaction.followup.send(f"💰 Balance: **{bal}** coins")
 
     # -----------------------
@@ -82,20 +101,22 @@ class Economy(commands.Cog):
 
     @app_commands.command(name="pay", description="Pay another user")
     async def pay(self, interaction: discord.Interaction, user: discord.Member, amount: int):
-        if user.bot or user == interaction.user:
-            return await interaction.followup.send("❌ Invalid target.", ephemeral=True)
+        await interaction.response.defer()
 
-        if amount <= 0:
-            return await interaction.followup.send("❌ Invalid amount.", ephemeral=True)
+        if not await self.economy_channel_only(interaction):
+            return
 
-        bal, *_ = self.get_user(interaction.user.id, interaction.guild.id)
+        if user.bot or user == interaction.user or amount <= 0:
+            return await interaction.followup.send("❌ Invalid payment.", ephemeral=True)
+
+        bal, _, _ = self.get_user(interaction.user.id, interaction.guild.id)
+        target_bal, _, _ = self.get_user(user.id, interaction.guild.id)
+
         if bal < amount:
             return await interaction.followup.send("❌ Not enough coins.", ephemeral=True)
 
-        target_bal, *_ = self.get_user(user.id, interaction.guild.id)
-
-        self.update_balance(interaction.user.id, interaction.guild.id, bal - amount)
-        self.update_balance(user.id, interaction.guild.id, target_bal + amount)
+        self.set_balance(interaction.user.id, interaction.guild.id, bal - amount)
+        self.set_balance(user.id, interaction.guild.id, target_bal + amount)
 
         await interaction.followup.send(
             f"💸 {interaction.user.mention} paid {user.mention} **{amount}** coins"
@@ -107,13 +128,18 @@ class Economy(commands.Cog):
 
     @app_commands.command(name="work", description="Work to earn coins")
     async def work(self, interaction: discord.Interaction):
-        bal, _, last_work, _ = self.get_user(interaction.user.id, interaction.guild.id)
+        await interaction.response.defer()
+
+        if not await self.economy_channel_only(interaction):
+            return
+
+        bal, last_work, _ = self.get_user(interaction.user.id, interaction.guild.id)
         now = int(time.time())
 
         if now - last_work < WORK_COOLDOWN:
-            remaining = WORK_COOLDOWN - (now - last_work)
+            mins = (WORK_COOLDOWN - (now - last_work)) // 60
             return await interaction.followup.send(
-                f"⏳ Try again in **{remaining // 60} minutes**",
+                f"⏳ Try again in **{mins} minutes**",
                 ephemeral=True
             )
 
@@ -130,36 +156,39 @@ class Economy(commands.Cog):
         )
         database.db.commit()
 
-        await interaction.followup.send(f"💼 You worked and earned **{earnings}** coins!")
+        await interaction.followup.send(f"💼 You earned **{earnings}** coins!")
 
     # -----------------------
     # CRIME
     # -----------------------
 
-    @app_commands.command(name="crime", description="Commit a crime (high risk)")
+    @app_commands.command(name="crime", description="Commit a crime")
     async def crime(self, interaction: discord.Interaction):
-        bal, _, _, last_crime = self.get_user(interaction.user.id, interaction.guild.id)
+        await interaction.response.defer()
+
+        if not await self.economy_channel_only(interaction):
+            return
+
+        bal, _, last_crime = self.get_user(interaction.user.id, interaction.guild.id)
         now = int(time.time())
 
         if now - last_crime < CRIME_COOLDOWN:
-            remaining = CRIME_COOLDOWN - (now - last_crime)
+            mins = (CRIME_COOLDOWN - (now - last_crime)) // 60
             return await interaction.followup.send(
-                f"⏳ Try again in **{remaining // 60} minutes**",
+                f"⏳ Try again in **{mins} minutes**",
                 ephemeral=True
             )
 
-        success_chance = 0.4
-        if self.get_item(interaction.user.id, interaction.guild.id, "gun"):
-            success_chance += 0.2
+        chance = 0.4 + (0.2 if self.get_item(interaction.user.id, interaction.guild.id, "gun") else 0)
 
-        if random.random() < success_chance:
+        if random.random() < chance:
             reward = random.randint(300, 700)
             bal += reward
-            message = f"🕵️ Crime successful! You gained **{reward}** coins."
+            msg = f"🕵️ Success! You gained **{reward}** coins."
         else:
-            loss = random.randint(100, 300)
-            bal = max(0, bal - loss)
-            message = f"🚓 You got caught! You lost **{loss}** coins."
+            loss = random.randint(100, min(300, bal))
+            bal -= loss
+            msg = f"🚓 Caught! You lost **{loss}** coins."
 
         database.cursor.execute(
             """
@@ -170,52 +199,44 @@ class Economy(commands.Cog):
         )
         database.db.commit()
 
-        await interaction.followup.send(message)
+        await interaction.followup.send(msg)
 
     # -----------------------
-    # ROB (USER VS USER)
+    # ROB
     # -----------------------
 
-    @app_commands.command(name="rob", description="Rob another user (very risky)")
+    @app_commands.command(name="rob", description="Rob another user")
     async def rob(self, interaction: discord.Interaction, target: discord.Member):
+        await interaction.response.defer()
+
+        if not await self.economy_channel_only(interaction):
+            return
+
         if target.bot or target == interaction.user:
             return await interaction.followup.send("❌ Invalid target.", ephemeral=True)
 
-        robber_bal, *_ = self.get_user(interaction.user.id, interaction.guild.id)
-        target_bal, *_ = self.get_user(target.id, interaction.guild.id)
+        bal, _, _ = self.get_user(interaction.user.id, interaction.guild.id)
+        target_bal, _, _ = self.get_user(target.id, interaction.guild.id)
 
         if target_bal < 100:
-            return await interaction.followup.send(
-                "❌ Target doesn't have enough coins to rob.",
-                ephemeral=True
-            )
+            return await interaction.followup.send("❌ Target too poor to rob.", ephemeral=True)
 
-        success_chance = 0.35
-        if self.get_item(interaction.user.id, interaction.guild.id, "gun"):
-            success_chance += 0.2
+        chance = 0.35 + (0.2 if self.get_item(interaction.user.id, interaction.guild.id, "gun") else 0)
 
-        if random.random() < success_chance:
+        if random.random() < chance:
             stolen = random.randint(100, min(500, target_bal))
-            robber_bal += stolen
+            bal += stolen
             target_bal -= stolen
-
-            message = (
-                f"🦹 **Robbery successful!**\n"
-                f"You stole **{stolen}** coins from {target.mention}"
-            )
+            msg = f"🦹 You robbed **{stolen}** coins from {target.mention}"
         else:
-            penalty = random.randint(100, min(300, robber_bal))
-            robber_bal -= penalty
+            penalty = random.randint(100, min(300, bal))
+            bal -= penalty
+            msg = f"🚨 Robbery failed! You lost **{penalty}** coins."
 
-            message = (
-                f"🚨 **Robbery failed!**\n"
-                f"You were caught and lost **{penalty}** coins."
-            )
+        self.set_balance(interaction.user.id, interaction.guild.id, bal)
+        self.set_balance(target.id, interaction.guild.id, target_bal)
 
-        self.update_balance(interaction.user.id, interaction.guild.id, robber_bal)
-        self.update_balance(target.id, interaction.guild.id, target_bal)
-
-        await interaction.followup.send(message)
+        await interaction.followup.send(msg)
 
     # -----------------------
     # SHOP
@@ -223,8 +244,12 @@ class Economy(commands.Cog):
 
     @app_commands.command(name="shop", description="View the shop")
     async def shop(self, interaction: discord.Interaction):
-        embed = discord.Embed(title="🛒 PopUtil Shop", color=discord.Color.green())
+        await interaction.response.defer()
 
+        if not await self.economy_channel_only(interaction):
+            return
+
+        embed = discord.Embed(title="🛒 PopUtil Shop", color=discord.Color.green())
         for item, data in SHOP_ITEMS.items():
             embed.add_field(
                 name=f"{item} — {data['price']} coins",
@@ -240,11 +265,16 @@ class Economy(commands.Cog):
 
     @app_commands.command(name="buy", description="Buy an item")
     async def buy(self, interaction: discord.Interaction, item: str):
+        await interaction.response.defer()
+
+        if not await self.economy_channel_only(interaction):
+            return
+
         item = item.lower()
         if item not in SHOP_ITEMS:
             return await interaction.followup.send("❌ Item not found.", ephemeral=True)
 
-        bal, *_ = self.get_user(interaction.user.id, interaction.guild.id)
+        bal, _, _ = self.get_user(interaction.user.id, interaction.guild.id)
         price = SHOP_ITEMS[item]["price"]
 
         if bal < price:
